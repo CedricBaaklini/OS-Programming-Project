@@ -70,9 +70,6 @@
   <component name="SshConsoleOptionsProvider">
     <option name="myConnectionType" value="NONE" />
   </component>
-  <component name="TerraformProjectSettings">
-    <option name="formattedBeforeCommit" value="true" />
-  </component>
   <component name="TypeScriptCompiler">
     <option name="recompileOnChanges" value="true" />
   </component>
