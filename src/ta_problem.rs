@@ -4,157 +4,231 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
-const NUM_STUDENTS: usize = 5;
-const NUM_CHAIRS: usize = 3;
-const MAX_HELP_SESSIONS: usize = 2;
+pub const NUM_STUDENTS: usize = 5;
+pub const NUM_CHAIRS: usize = 3;
+pub const MAX_HELP_SESSIONS: usize = 2;
 
-#[derive(Clone)]
-struct TAOffice {
-    waiting_students: Arc<Mutex<VecDeque<usize>>>,
-    ta_sleeping: Arc<Mutex<bool>>,
-    ta_helping: Arc<Mutex<bool>>,
-    ta_wakeup: Arc<Condvar>,
-    student_helped: Arc<Condvar>,
-    students_helped: Arc<Mutex<Vec<usize>>>,
+pub struct Semaphore {
+    mutex: Mutex<isize>,
+    cvar: Condvar,
 }
 
-impl TAOffice {
-    fn new() -> Self {
-        TAOffice {
-            waiting_students: Arc::new(Mutex::new(VecDeque::new())),
-            ta_sleeping: Arc::new(Mutex::new(true)),
-            ta_helping: Arc::new(Mutex::new(false)),
-            ta_wakeup: Arc::new(Condvar::new()),
-            student_helped: Arc::new(Condvar::new()),
-            students_helped: Arc::new(Mutex::new(vec![0, NUM_STUDENTS])),
+impl Semaphore {
+    pub fn new(count: isize) -> Self {
+        Semaphore {
+            mutex: Mutex::new(count),
+            cvar: Condvar::new(),
         }
     }
 
-    fn student_arrives(&self, student_id: usize) -> bool {
-        println!("Student {} arrives at TA's office", student_id);
+    //The equivalent of our "wait" function.
+    pub fn acquire(&self) {
+        let mut count = self.mutex.lock().unwrap();
 
-        let mut waiting = self.waiting_students.lock().unwrap();
-        let mut ta_sleeping = self.ta_sleeping.lock().unwrap();
-        let ta_helping = self.ta_helping.lock().unwrap();
-
-        if *ta_sleeping && !*ta_helping {
-            println!("Student {} wakes up the sleeping TA", student_id);
-
-            *ta_sleeping = false;
-            drop(ta_helping);
-            drop(waiting);
-
-            self.ta_wakeup.notify_one();
-            drop(ta_sleeping);
-
-            self.wait_for_help(student_id);
-
-            return true;
+        while count <= 0 {
+            count = self.cvar.wait(count).unwrap();
         }
 
-        return if waiting.len() < NUM_CHAIRS {
-            println!(
-                "Student {} sits in the hallway (chair {}/{}",
-                student_id,
-                waiting.len() + 1,
-                NUM_CHAIRS
-            );
+        *count -= 1;
+    }
 
-            waiting.push_back(student_id);
-            drop(ta_helping);
-            drop(waiting);
-            drop(ta_sleeping);
+    pub fn try_acquire(&self) -> bool {
+        let mut count = self.mutex.lock().unwrap();
 
-            self.wait_for_help(student_id);
-
+        if *count > 0 {
+            *count -= 1;
             true
         } else {
             false
-        };
-    }
-
-    fn wait_for_help(&self, student_id: usize) {
-        let mut helped = self.students_helped.lock().unwrap();
-
-        while helped[student_id] == 0
-            || (helped[student_id] < MAX_HELP_SESSIONS && !self.is_student_being_helped(student_id))
-        {
-            helped = self.student_helped.wait(helped).unwrap();
         }
     }
 
-    fn is_student_being_helped(&self, student_id: usize) -> bool {
-        let waiting = self.waiting_students.lock().unwrap();
-        let ta_helping = self.ta_helping.lock().unwrap();
+    //The equivalent of our "signal" function.
+    pub fn release(&self) {
+        let mut count = self.mutex.wait().unwrap();
+        *count += 1;
+    }
+}
 
-        *ta_helping && (waiting.is_empty() || waiting.front() != Some(&student_id))
+#[derive(Clone)]
+pub struct TAOffice {
+    ta_sleeping: Arc<Semaphore>,
+    students_waiting: Arc<Semaphore>,
+    chairs: Arc<Semaphore>,
+
+    waiting_students: Arc<Mutex<VecDeque<usize>>>,
+    students_helped: Arc<Mutex<Vec<usize>>>,
+    current_student: Arc<Mutex<Option<usize>>>,
+}
+
+impl TAOffice {
+    pub fn new() -> Self {
+        TAOffice {
+            ta_sleeping: Arc::new(Semaphore::new(0)),
+            students_waiting: Arc::new(Semaphore::new(0)),
+            chairs: Arc::new(Semaphore::new(NUM_CHAIRS)),
+
+            waiting_students: Arc::new(Mutex::new(VecDeque::new)),
+            students_helped: Arc::new(Mutex::new(vec![0, NUM_STUDENTS])),
+            current_student: Arc::new(Mutex::new(None)),
+        }
     }
 
-    fn ta_work(&self) {
+    pub fn student_seeks_help(&self, student_id: usize) -> bool {
+        println!("Student {} arrives at TA's office", student_id);
+
+        if !self.chairs.try_acquire() {
+            println!(
+                "Student {} finds no available chairs and leaves",
+                student_id
+            );
+            return false;
+        }
+
+        println!("Student {} sits in the hallway", student_id);
+
+        {
+            let mut waiting = self.waiting_students.lock().unwrap();
+            waiting.push_back();
+        }
+
+        self.students_waiting.release();
+
+        self.ta_sleeping.release();
+
+        self.wait_for_turn(student_id);
+
+        self.chairs.release();
+
+        true
+    }
+
+    fn wait_for_turn(&self, student_id: usize) {
+        loop {
+            {
+                let current = self.current_student.lock().unwrap();
+
+                if let Some(current_id) = *current {
+                    if current_id == student_id {
+                        break;
+                    }
+                }
+            }
+
+            {
+                let helped = self.students_helped.lock().unwrap();
+
+                if helped[student_id] > 0 {
+                    break;
+                }
+            }
+
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    pub fn ta_work() {
+        println!("TA arrives at the office and goes to sleep");
+
         loop {
             if self.all_students_done() {
-                println!("All students were helped out twice. TA is done for the day!");
+                println!("All students have been helped twice. TA is done for the day");
                 break;
             }
 
-            let mut ta_sleeping = self.ta_sleeping.lock().unwrap();
-            let waiting = self.waiting_students.lock().unwrap();
+            println!("TA is sleeping...");
 
-            if waiting.is_empty() {
-                println!("TA has no students to help and returns to sleep");
-                *ta_sleeping = true;
-                drop(waiting);
+            self.ta_sleeping.acquire();
 
-                ta_sleeping = self.ta_wakeup.wait(ta_sleeping).unwrap();
-                println!("TA wakes up");
-            }
+            println!("TA wakes up!");
 
-            drop(ta_sleeping);
+            while self.students_waiting.try_acquire() {
+                let student_id = {
+                    let mut waiting = self.waiting_students.lock().unwrap();
 
-            while let Some(student_id) = {
-                let mut waiting = self.waiting_students.lock().unwrap();
-                waiting.pop_front()
-            } {
-                self.help_student(student_id);
+                    waiting.pop_front()
+                };
+
+                if let Some(student_id) = student_id {
+                    self.help_student(student_id);
+                } else {
+                    break;
+                }
             }
         }
     }
 
     fn help_student(&self, student_id: usize) {
         {
-            let mut ta_helping = self.ta_helping.lock().unwrap();
-            *ta_helping = true;
+            let mut current = self.current_student.lock().unwrap();
+            *current = Some(student_id);
         }
 
-        println!("TA has started helping Student {}", student_id);
+        println!("TA helps student {}", student_id);
 
-        let help_time = rand::rng().random_range(1000..3000);
+        let help_time = rand::thread_rng().gen_range(1000..3000);
         thread::sleep(Duration::from_millis(help_time));
 
         {
             let mut helped = self.students_helped.lock().unwrap();
             helped[student_id] += 1;
+
             println!(
-                "TA has finished helping Student {} (help session {}/{})",
+                "TA finishes helping Student {} (help session {}/{})",
                 student_id, helped[student_id], MAX_HELP_SESSIONS
             );
         }
 
         {
-            let mut ta_helping = self.ta_helping.lock().unwrap();
-            *ta_helping = false;
+            let mut current = self.current_student.lock().unwrap();
+
+            *current = None;
         }
 
-        self.student_helped.notify_all();
+        println!("Student {} leaves the office", student_id);
     }
 
     fn all_students_done(&self) -> bool {
         let helped = self.students_helped.lock().unwrap();
+
         helped.iter().all(|&count| count >= MAX_HELP_SESSIONS)
     }
 
-    fn get_help_count(&self, student_id: usize) -> usize {
+    pub fn get_help_count(&self, student_id: usize) -> usize {
         let helped = self.students_helped.lock().unwrap();
+
         helped[student_id]
     }
+}
+
+pub fn student_thread(student_id: usize, office: TAOffice) {
+    let mut rng = rand::thread_rng();
+
+    while office.get_help_count(student_id) < MAX_HELP_SESSIONS {
+        let programming_time = rng.gen_range(2000..5000);
+
+        println!(
+            "Student {} is programming for {}ms",
+            student_id, programming_time
+        );
+
+        thread::sleep(Duration::from_millis(programming_time));
+
+        let got_help = office.student_seeks_help(student_id);
+
+        if !got_help {
+            let wait_time = rng.gen_range(1000..3000);
+
+            println!("Student {} will try again in {}ms", student_id, wait_time);
+        }
+    }
+
+    println!(
+        "Student {} has received help {} times and is done!",
+        student_id, MAX_HELP_SESSIONS
+    );
+}
+
+pub fn ta_thread(office: TAOffice) {
+    office.ta_work();
 }
