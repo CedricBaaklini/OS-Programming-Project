@@ -21,11 +21,10 @@ impl Semaphore {
         }
     }
 
-    //The equivalent of our "wait" function.
     pub fn acquire(&self) {
         let mut count = self.mutex.lock().unwrap();
 
-        while count <= 0 {
+        while *count <= 0 {
             count = self.cvar.wait(count).unwrap();
         }
 
@@ -43,10 +42,10 @@ impl Semaphore {
         }
     }
 
-    //The equivalent of our "signal" function.
     pub fn release(&self) {
-        let mut count = self.mutex.wait().unwrap();
+        let mut count = self.mutex.lock().unwrap();
         *count += 1;
+        self.cvar.notify_one();
     }
 }
 
@@ -66,10 +65,10 @@ impl TAOffice {
         TAOffice {
             ta_sleeping: Arc::new(Semaphore::new(0)),
             students_waiting: Arc::new(Semaphore::new(0)),
-            chairs: Arc::new(Semaphore::new(NUM_CHAIRS)),
+            chairs: Arc::new(Semaphore::new(NUM_CHAIRS as isize)),
 
-            waiting_students: Arc::new(Mutex::new(VecDeque::new)),
-            students_helped: Arc::new(Mutex::new(vec![0, NUM_STUDENTS])),
+            waiting_students: Arc::new(Mutex::new(VecDeque::new())),
+            students_helped: Arc::new(Mutex::new(vec![0; NUM_STUDENTS])),
             current_student: Arc::new(Mutex::new(None)),
         }
     }
@@ -89,7 +88,7 @@ impl TAOffice {
 
         {
             let mut waiting = self.waiting_students.lock().unwrap();
-            waiting.push_back();
+            waiting.push_back(student_id);
         }
 
         self.students_waiting.release();
@@ -107,7 +106,6 @@ impl TAOffice {
         loop {
             {
                 let current = self.current_student.lock().unwrap();
-
                 if let Some(current_id) = *current {
                     if current_id == student_id {
                         break;
@@ -117,9 +115,13 @@ impl TAOffice {
 
             {
                 let helped = self.students_helped.lock().unwrap();
-
+                // FIXED: More robust condition - check if we were just helped
                 if helped[student_id] > 0 {
-                    break;
+                    // Only break if we're not currently in the queue waiting for more help
+                    let waiting = self.waiting_students.lock().unwrap();
+                    if !waiting.contains(&student_id) {
+                        break;
+                    }
                 }
             }
 
@@ -127,7 +129,7 @@ impl TAOffice {
         }
     }
 
-    pub fn ta_work() {
+    pub fn ta_work(&self) {
         println!("TA arrives at the office and goes to sleep");
 
         loop {
@@ -166,7 +168,7 @@ impl TAOffice {
 
         println!("TA helps student {}", student_id);
 
-        let help_time = rand::thread_rng().gen_range(1000..3000);
+        let help_time = rand::rng().random_range(1000..3000);
         thread::sleep(Duration::from_millis(help_time));
 
         {
@@ -181,7 +183,6 @@ impl TAOffice {
 
         {
             let mut current = self.current_student.lock().unwrap();
-
             *current = None;
         }
 
@@ -202,10 +203,10 @@ impl TAOffice {
 }
 
 pub fn student_thread(student_id: usize, office: TAOffice) {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     while office.get_help_count(student_id) < MAX_HELP_SESSIONS {
-        let programming_time = rng.gen_range(2000..5000);
+        let programming_time = rng.random_range(2000..5000);
 
         println!(
             "Student {} is programming for {}ms",
@@ -217,9 +218,10 @@ pub fn student_thread(student_id: usize, office: TAOffice) {
         let got_help = office.student_seeks_help(student_id);
 
         if !got_help {
-            let wait_time = rng.gen_range(1000..3000);
+            let wait_time = rng.random_range(1000..3000);
 
             println!("Student {} will try again in {}ms", student_id, wait_time);
+            thread::sleep(Duration::from_millis(wait_time));
         }
     }
 
