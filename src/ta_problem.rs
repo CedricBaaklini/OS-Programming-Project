@@ -138,7 +138,7 @@ impl TAOffice {
                 break;
             }
 
-            println!("TA is sleeping...");
+            println!("TA is sleeping");
 
             self.ta_sleeping.acquire();
 

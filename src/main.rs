@@ -2,7 +2,7 @@ mod ta_problem;
 use crate::ta_problem::TAOffice;
 use std::thread;
 use std::thread::JoinHandle;
-use ta_problem::{MAX_HELP_SESSIONS, NUM_CHAIRS, NUM_STUDENTS, student_thread, ta_thread};
+use ta_problem::{student_thread, ta_thread, MAX_HELP_SESSIONS, NUM_CHAIRS, NUM_STUDENTS};
 
 fn main() {
     println!("Sleeping Teaching Assistant Problem");
