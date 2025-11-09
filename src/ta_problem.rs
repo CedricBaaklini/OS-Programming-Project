@@ -226,7 +226,7 @@ pub fn student_thread(student_id: usize, office: TAOffice) {
     }
 
     println!(
-        "Student {} has received help {} times and is done!",
+        "Student {} has received help {} times and is done.",
         student_id, MAX_HELP_SESSIONS
     );
 }
