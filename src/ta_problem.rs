@@ -51,7 +51,8 @@ impl Semaphore {
 
 #[derive(Clone)]
 pub struct TAOffice {
-    ta_sleeping: Arc<Semaphore>,
+    ta_sleeping: Arc<Semaphore>, //Binary semaphore
+    //Counting semaphores
     students_waiting: Arc<Semaphore>,
     chairs: Arc<Semaphore>,
 
@@ -115,9 +116,7 @@ impl TAOffice {
 
             {
                 let helped = self.students_helped.lock().unwrap();
-                // FIXED: More robust condition - check if we were just helped
                 if helped[student_id] > 0 {
-                    // Only break if we're not currently in the queue waiting for more help
                     let waiting = self.waiting_students.lock().unwrap();
                     if !waiting.contains(&student_id) {
                         break;
