@@ -28,7 +28,7 @@ fn main() {
         handle.join().unwrap();
     }
 
-    println!("\nAll students have finished. Waiting for TA...");
+    println!("\nAll students have finished. Waiting for TA");
 
     ta_handle.join().unwrap();
 }
